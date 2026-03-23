@@ -2,13 +2,46 @@ import re
 import zipfile
 from io import BytesIO
 from collections import Counter
+from datetime import date
 
 import pandas as pd
 import pdfplumber
 import streamlit as st
 
 
+# =========================
+# Expiry Settings
+# =========================
+ENABLE_EXPIRY = False  # True = locked, False = open
+
 st.set_page_config(page_title="Webtool", layout="wide")
+
+if ENABLE_EXPIRY:
+    st.markdown(
+        """
+        <div style="
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 80vh;
+            text-align: center;
+        ">
+            <h1 style="color: #e74c3c; font-size: 48px;">
+                ⛔ Access Denied
+            </h1>
+            <p style="font-size: 20px; color: #555;">
+                This application is currently unavailable.
+            </p>
+            <p style="font-size: 16px; color: #888;">
+                Please contact the developer(JBI).
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    st.stop()
+
 st.title("Purchase Order Extractor")
 
 
@@ -337,10 +370,7 @@ def parse_items(lines: list[str]) -> list[dict]:
             if ITEM_START_RE.match(nxt):
                 break
 
-            # ✅ NEW: merge trailing number with next packaging line
-            # Example:
-            #   "... Dilmah 50"
-            #   "sachet/box"
+            # merge trailing number with next packaging line
             m_trailing_num = re.search(r"(?:^|\s)(\d{1,3})$", nxt)
             nxt2 = clean_space(lines[i + 1]) if (i + 1 < len(lines)) else ""
             if m_trailing_num and nxt2 and is_pack_line(nxt2):
@@ -355,10 +385,9 @@ def parse_items(lines: list[str]) -> list[dict]:
 
             # numeric-only line handling (pack-size vs item-no)
             if re.fullmatch(r"\d{1,3}", nxt):
-                # Keep ONLY when next line starts with a WORD-packaging line (e.g., "bottle/case")
-                # If next line starts with digits (e.g., "640mlx12/case"), then this number is item-no -> DROP
+                # Keep ONLY when next line starts with a WORD-packaging line
                 if nxt2 and is_pack_line(nxt2):
-                    desc_parts.append(nxt)  # keep 12/24/48 etc.
+                    desc_parts.append(nxt)
                     i += 1
                     continue
 
@@ -420,7 +449,15 @@ if uploaded_files:
         po_key = normalize_po(po_raw)
         ship = clean_space(header.get("Ship To", ""))
 
-        per_pdf.append({"name": up["name"], "po_raw": po_raw, "po_key": po_key, "header": header, "items": items})
+        per_pdf.append(
+            {
+                "name": up["name"],
+                "po_raw": po_raw,
+                "po_key": po_key,
+                "header": header,
+                "items": items,
+            }
+        )
 
         if not po_key:
             if ship:
