@@ -12,7 +12,7 @@ import streamlit as st
 # =========================
 # Expiry Settings
 # =========================
-ENABLE_EXPIRY = True  # True = locked, False = open
+ENABLE_EXPIRY = False  # True = locked, False = open
 
 st.set_page_config(page_title="Webtool", layout="wide")
 
