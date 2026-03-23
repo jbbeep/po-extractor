@@ -1,16 +1,17 @@
 import re
+import time
 import zipfile
 from io import BytesIO
 from collections import Counter
-from datetime import date
 
 import pandas as pd
 import pdfplumber
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 # =========================
-# Expiry Settings
+# Access Settings
 # =========================
 ENABLE_EXPIRY = False  # True = locked, False = open
 
@@ -28,19 +29,248 @@ if ENABLE_EXPIRY:
             text-align: center;
         ">
             <h1 style="color: #e74c3c; font-size: 48px;">
-                ⛔ Access Denied
+                ⛔ Access Stopped!
             </h1>
             <p style="font-size: 20px; color: #555;">
                 This application is currently unavailable.
             </p>
             <p style="font-size: 16px; color: #888;">
-                Please contact the developer(JBI).
+                Please contact the developer (JBI).
             </p>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
     st.stop()
+
+
+# =========================
+# JB Wake-up Intro
+# =========================
+sleep_html = """
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+    body {
+        margin: 0;
+        background: #eef3f9;
+        font-family: Arial, sans-serif;
+    }
+
+    .wrap {
+        height: 72vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .scene {
+        text-align: center;
+        color: #333;
+    }
+
+    .sleep {
+        font-size: 38px;
+        color: #6b7c93;
+        margin-bottom: 16px;
+        animation: floatzzz 1.6s ease-in-out infinite;
+    }
+
+    .bed {
+        position: relative;
+        width: 280px;
+        height: 150px;
+        margin: 0 auto 20px auto;
+    }
+
+    .mattress {
+        position: absolute;
+        bottom: 10px;
+        left: 12px;
+        width: 255px;
+        height: 95px;
+        background: #d9e6f2;
+        border-radius: 18px;
+        border: 3px solid #b8cde0;
+    }
+
+    .pillow {
+        position: absolute;
+        left: 28px;
+        top: 28px;
+        width: 58px;
+        height: 36px;
+        background: #ffffff;
+        border-radius: 10px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+    }
+
+    .blanket {
+        position: absolute;
+        bottom: 18px;
+        left: 82px;
+        width: 135px;
+        height: 52px;
+        background: #8bb7f0;
+        border-radius: 24px;
+        animation: blanket-breathe 1.8s ease-in-out infinite;
+    }
+
+    .jb-head {
+        position: absolute;
+        left: 62px;
+        top: 38px;
+        width: 34px;
+        height: 34px;
+        background: #f2c9a5;
+        border-radius: 50%;
+        border: 2px solid #d9a97e;
+        z-index: 2;
+    }
+
+    .jb-hair {
+        position: absolute;
+        left: 64px;
+        top: 33px;
+        width: 34px;
+        height: 16px;
+        background: #2b2b2b;
+        border-radius: 16px 16px 8px 8px;
+        z-index: 3;
+    }
+
+    .title {
+        font-size: 28px;
+        font-weight: 700;
+        color: #1f4e79;
+        margin-top: 10px;
+    }
+
+    .sub {
+        font-size: 16px;
+        color: #666;
+        margin-top: 6px;
+    }
+
+    .app-box {
+        margin: 18px auto 0 auto;
+        display: inline-block;
+        padding: 12px 20px;
+        background: #e8f4ea;
+        color: #1d6b3b;
+        border: 1px solid #b9dfc1;
+        border-radius: 12px;
+        font-weight: 600;
+        animation: pulse 1.4s ease-in-out infinite;
+    }
+
+    @keyframes blanket-breathe {
+        0%, 100% { transform: translateY(0px); }
+        50% { transform: translateY(-4px); }
+    }
+
+    @keyframes floatzzz {
+        0%, 100% { transform: translateY(0px); opacity: 0.7; }
+        50% { transform: translateY(-8px); opacity: 1; }
+    }
+
+    @keyframes pulse {
+        0%, 100% { transform: scale(1); box-shadow: 0 0 0 rgba(29,107,59,0.0); }
+        50% { transform: scale(1.04); box-shadow: 0 0 18px rgba(29,107,59,0.15); }
+    }
+</style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="scene">
+            <div class="sleep">😴 Zzz... Zzz...</div>
+
+            <div class="bed">
+                <div class="mattress"></div>
+                <div class="pillow"></div>
+                <div class="jb-head"></div>
+                <div class="jb-hair"></div>
+                <div class="blanket"></div>
+            </div>
+
+            <div class="title">JBI is sleeping...</div>
+            <div class="sub">JBI is waking to start the PO Generator.</div>
+            <div class="app-box">Initializing Purchase Order Extractor...</div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+wake_html = """
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+    body {
+        margin: 0;
+        background: #eef3f9;
+        font-family: Arial, sans-serif;
+    }
+
+    .wrap {
+        height: 72vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+    }
+
+    .emoji {
+        font-size: 70px;
+        margin-bottom: 10px;
+        animation: bounce 1s ease-in-out infinite;
+    }
+
+    .title {
+        font-size: 32px;
+        font-weight: 700;
+        color: #1f4e79;
+        margin-bottom: 10px;
+    }
+
+    .sub {
+        font-size: 18px;
+        color: #555;
+    }
+
+    @keyframes bounce {
+        0%, 100% { transform: translateY(0px); }
+        50% { transform: translateY(-10px); }
+    }
+</style>
+</head>
+<body>
+    <div class="wrap">
+        <div>
+            <div class="emoji">😳</div>
+            <div class="title">JBI woke up!</div>
+            <div class="sub">Powering PO Generator...</div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+intro_placeholder = st.empty()
+
+with intro_placeholder.container():
+    components.html(sleep_html, height=700)
+
+time.sleep(2.2)
+
+with intro_placeholder.container():
+    components.html(wake_html, height=420)
+
+time.sleep(1.2)
+intro_placeholder.empty()
+
 
 st.title("Purchase Order Extractor")
 
