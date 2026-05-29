@@ -442,6 +442,233 @@ def extract_lines_from_pdf_bytes(pdf_bytes: bytes) -> list[str]:
 
 
 # =========================
+# Corporation Name parsing
+# =========================
+COMPANY_RE = re.compile(
+    r"([A-Za-z0-9&'.,()\/\- ]{2,}?\s+"
+    r"(?:Corp\.?|Corporation|Inc\.?|Company|Co\.?|Ltd\.?|LLC\.?))"
+    r"(?=$|\s|,)",
+    flags=re.I,
+)
+
+
+def is_bad_corporation_candidate(line: str) -> bool:
+    """
+    Reject lines that are definitely not the customer/corporation name.
+    This prevents totals, addresses, and table text from being captured.
+    """
+    line = clean_space(line)
+    if not line:
+        return True
+
+    # Reject totals and VAT summary lines.
+    if re.match(r"^(Total|12%\s*VAT|VAT|VVGOODS?)\b", line, flags=re.I):
+        return True
+
+    # Reject lines with many numeric/money values.
+    money_hits = re.findall(r"\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+\.\d+", line)
+    if len(money_hits) >= 3:
+        return True
+
+    reject_re = re.compile(
+        r"(Purchase Order|Page\s+\d+|VAT\s*REG\s*TIN|Philippines|"
+        r"Phone No|Home Page|Email|Giro No|Bank|Account No|Order No|Document Date|"
+        r"Delivery Date|Payment Terms|Shipment Method|Prices Including VAT|"
+        r"Buy-from Vendor|VAT Registration|Ship-to Address|Acknowledgement|"
+        r"THIS DOCUMENT|Series Range|Date Issued|Total PHP|VAT Amount|VAT Invoice|"
+        r"Invoice Discount|No\.|Description|Quantity|Measure|Direct|Unit|Cost|Discount|Identifier|Amount)",
+        flags=re.I,
+    )
+
+    if reject_re.search(line):
+        return True
+
+    # Reject issuer/vendor names and known issuer address parts.
+    if re.search(
+        r"(FSS\s+Systems|Vince\s+Punto|Praxedes|East\s+Capitol|Pasig\s+City)",
+        line,
+        flags=re.I,
+    ):
+        return True
+
+    # Reject obvious address/location lines.
+    if re.search(
+        r"\b(street|st\.|drive|road|rd\.|city|barangay|bldg|building|floor|flr|unit|phase|mall|avenue|ave\.|blvd|corner|level|ground|suite|philippines|makati|taguig|quezon|paranaque|cavite)\b",
+        line,
+        flags=re.I,
+    ):
+        return True
+
+    # Reject mostly numeric lines.
+    if re.fullmatch(r"[\d\s\-,.:/]+", line):
+        return True
+
+    return False
+
+
+def extract_company_from_line(line: str) -> str:
+    """
+    Extract company/corporation name from one text line.
+    Supports:
+      Corp / Corp.
+      Corporation
+      Inc / Inc.
+      Company
+      Co / Co.
+      Ltd / Ltd.
+      LLC / LLC.
+    """
+    line = clean_space(line)
+    if not line:
+        return ""
+
+    # Remove Purchase Order text if somehow on same line.
+    line = re.sub(r"\bPurchase\s+Order\b.*$", "", line, flags=re.I)
+    line = clean_space(line)
+
+    if is_bad_corporation_candidate(line):
+        return ""
+
+    m = COMPANY_RE.search(line)
+    if not m:
+        return ""
+
+    company = clean_space(m.group(1))
+
+    if is_bad_corporation_candidate(company):
+        return ""
+
+    if re.search(r"FSS\s+Systems", company, flags=re.I):
+        return ""
+
+    return company
+
+
+def extract_corporation_name_from_pdf_layout(pdf_bytes: bytes) -> str:
+    """
+    Layout-based corporation extraction.
+
+    This checks the upper-right header area of each PDF page.
+    In the PO layout, the corporation/customer name is usually:
+      - below Page 1 / Page 2
+      - above address / VAT REG TIN
+      - on the right side of the page
+
+    This is added without changing the working item / Ship To parsing.
+    """
+    try:
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                width = float(page.width)
+                height = float(page.height)
+
+                words = page.extract_words(
+                    x_tolerance=2,
+                    y_tolerance=3,
+                    keep_blank_chars=False,
+                    use_text_flow=False,
+                )
+
+                right_top_words = []
+                for w in words:
+                    x0 = float(w.get("x0", 0))
+                    top = float(w.get("top", 0))
+
+                    # Upper-right area only.
+                    # This is where the Page 1/Page 2 and corporation name are located.
+                    if x0 >= width * 0.50 and top <= height * 0.35:
+                        txt = clean_space(w.get("text", ""))
+                        if txt:
+                            right_top_words.append(w)
+
+                if not right_top_words:
+                    continue
+
+                # Group words into visual lines by Y position.
+                line_groups = {}
+                for w in right_top_words:
+                    y_key = round(float(w.get("top", 0)) / 4) * 4
+                    line_groups.setdefault(y_key, []).append(w)
+
+                visual_lines = []
+                for y_key in sorted(line_groups.keys()):
+                    group = sorted(line_groups[y_key], key=lambda x: float(x.get("x0", 0)))
+                    line = clean_space(" ".join(clean_space(x.get("text", "")) for x in group))
+                    if line:
+                        visual_lines.append(line)
+
+                # Direct visual-line match.
+                for line in visual_lines:
+                    company = extract_company_from_line(line)
+                    if company:
+                        return company
+
+                # Joined fallback for split words/lines.
+                joined = clean_space(" ".join(visual_lines))
+                company = extract_company_from_line(joined)
+                if company:
+                    return company
+
+    except Exception:
+        return ""
+
+    return ""
+
+
+def parse_corporation_name(lines: list[str]) -> str:
+    """
+    Text-based corporation extraction backup.
+
+    Layout-based extraction is used first in the main processing.
+    This function remains as backup using extracted text lines.
+    """
+    cleaned_lines = [clean_space(x) for x in lines if clean_space(x)]
+
+    # PASS 1: Direct scan for company suffix in extracted text.
+    for line in cleaned_lines:
+        company = extract_company_from_line(line)
+        if company:
+            return company
+
+    # PASS 2: Search around Purchase Order.
+    for i, line in enumerate(cleaned_lines):
+        if re.search(r"\bPurchase\s+Order\b", line, flags=re.I):
+            before_lines = cleaned_lines[max(0, i - 25):i]
+            for candidate in reversed(before_lines):
+                company = extract_company_from_line(candidate)
+                if company:
+                    return company
+
+            window = cleaned_lines[max(0, i - 25): min(len(cleaned_lines), i + 10)]
+            for candidate in window:
+                company = extract_company_from_line(candidate)
+                if company:
+                    return company
+
+    # PASS 3: Search around VAT REG TIN.
+    for i, line in enumerate(cleaned_lines):
+        if re.search(r"VAT\s*REG\s*TIN", line, flags=re.I):
+            window = cleaned_lines[max(0, i - 20): min(len(cleaned_lines), i + 30)]
+
+            for candidate in window:
+                company = extract_company_from_line(candidate)
+                if company:
+                    return company
+
+    # PASS 4: Search around POR number.
+    for i, line in enumerate(cleaned_lines):
+        if re.search(r"\bPOR\d{6,12}\b", line, flags=re.I):
+            window = cleaned_lines[max(0, i - 20): min(len(cleaned_lines), i + 30)]
+
+            for candidate in window:
+                company = extract_company_from_line(candidate)
+                if company:
+                    return company
+
+    return ""
+
+
+# =========================
 # Header parsing
 # =========================
 DATE_PATTERN = r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}"
@@ -504,7 +731,13 @@ def extract_order_no_best_effort(lines: list[str]) -> str:
 
 def parse_header(lines: list[str]) -> dict:
     text = "\n".join(lines)
-    header = {"Order No": "", "Document Date": "", "Delivery Date": "", "Ship To": ""}
+    header = {
+        "Order No": "",
+        "Document Date": "",
+        "Delivery Date": "",
+        "Corporation Name": "",
+        "Ship To": "",
+    }
 
     header["Order No"] = extract_order_no_best_effort(lines)
 
@@ -516,7 +749,9 @@ def parse_header(lines: list[str]) -> dict:
     if m:
         header["Delivery Date"] = clean_space(m.group(1))
 
+    header["Corporation Name"] = parse_corporation_name(lines)
     header["Ship To"] = parse_ship_to_first(lines)
+
     return header
 
 
@@ -679,6 +914,13 @@ if uploaded_files:
         po_key = normalize_po(po_raw)
         ship = clean_space(header.get("Ship To", ""))
 
+        # Corporation Name:
+        # 1. layout-based extraction from upper-right PDF area
+        # 2. backup text-based header extraction
+        corp_name = clean_space(extract_corporation_name_from_pdf_layout(up["bytes"]))
+        if not corp_name:
+            corp_name = clean_space(header.get("Corporation Name", ""))
+
         per_pdf.append(
             {
                 "name": up["name"],
@@ -696,9 +938,17 @@ if uploaded_files:
 
         prev = best_header_by_po.get(
             po_key,
-            {"Order No": po_raw, "Document Date": "", "Delivery Date": "", "Ship To": ""},
+            {
+                "Order No": po_raw,
+                "Document Date": "",
+                "Delivery Date": "",
+                "Corporation Name": "",
+                "Ship To": "",
+            },
         )
+
         prev["Ship To"] = keep_best_nonblank(prev.get("Ship To", ""), ship)
+        prev["Corporation Name"] = keep_best_nonblank(prev.get("Corporation Name", ""), corp_name)
 
         if clean_space(header.get("Document Date", "")) and not prev["Document Date"]:
             prev["Document Date"] = header["Document Date"]
@@ -720,6 +970,7 @@ if uploaded_files:
         )
 
     ship_map = {k: clean_space(v.get("Ship To", "")) for k, v in best_header_by_po.items()}
+    corp_map = {k: clean_space(v.get("Corporation Name", "")) for k, v in best_header_by_po.items()}
 
     # PASS 2
     all_rows = []
@@ -734,6 +985,7 @@ if uploaded_files:
                     "Order No": best.get("Order No", rec["po_raw"]),
                     "Document Date": best.get("Document Date", ""),
                     "Delivery Date": best.get("Delivery Date", ""),
+                    "Corporation Name": corp_map.get(po_key, clean_space(best.get("Corporation Name", ""))),
                     "Ship To": ship_map.get(po_key, ""),
                     **it,
                 }
@@ -799,7 +1051,7 @@ st.markdown(
     </style>
 
     <div class="footer">
-        TBG PO PDF to Excel Converter • Version 2.7.0 • Developed by JBI
+        TBG PO PDF to Excel Converter • Version 2.8.4 • Developed by JBI
     </div>
     """,
     unsafe_allow_html=True,
